@@ -38,7 +38,9 @@ connectDB();
 // 🚀 [الضربة القاضية للثغرات] تعريف البروكسي للسيرفرات السحابية
 app.set('trust proxy', 1);
 
-app.use(helmet());
+app.use(helmet({
+  frameguard: false
+}));
 
 // إعدادات CORS صارمة
 const allowedOrigins = [

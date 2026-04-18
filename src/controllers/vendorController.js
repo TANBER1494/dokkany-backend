@@ -38,7 +38,7 @@ const addVendor = asyncHandler(async (req, res, next) => {
 });
 
 // ==========================================
-// 📋 2. جلب موردين فرع محدد (مع حساب إجمالي الديون للنشطين)
+// 📋 2. جلب موردين فرع محدد (مع حساب إجمالي الديون للنشطين) - 🚀 جراحة محاسبية
 // ==========================================
 const getVendors = asyncHandler(async (req, res, next) => {
   const branchId = req.user.role === 'CASHIER' ? req.user.branch_id : req.query.branch_id;
@@ -50,21 +50,42 @@ const getVendors = asyncHandler(async (req, res, next) => {
   let total_debt = 0;
 
   if (activeVendorIds.length > 0) {
-    const branchShifts = await Shift.find({ branch_id: branchId }).select('_id').lean();
-    const shiftIds = branchShifts.map(s => s._id);
-
-    const [invoicesTotal, paymentsTotal] = await Promise.all([
-      VendorInvoice.aggregate([
-        { $match: { branch_id: new mongoose.Types.ObjectId(branchId), deleted_at: null, vendor_id: { $in: activeVendorIds } } },
-        { $group: { _id: null, total: { $sum: '$total_amount' } } }
-      ]),
-      CashFlow.aggregate([
-        { $match: { shift_id: { $in: shiftIds }, type: 'VENDOR_PAYMENT', vendor_id: { $in: activeVendorIds } } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ])
+    // 1. حساب إجمالي "المتبقي" من الفواتير لكل مورد
+    const invoicesAgg = await VendorInvoice.aggregate([
+      { $match: { branch_id: new mongoose.Types.ObjectId(branchId), vendor_id: { $in: activeVendorIds }, deleted_at: null } },
+      { $group: { _id: '$vendor_id', total_remaining: { $sum: '$remaining_amount' } } }
     ]);
 
-    total_debt = (invoicesTotal[0]?.total || 0) - (paymentsTotal[0]?.total || 0);
+    // 2. حساب إجمالي "الدفعات المستقلة" (التي لم تُدفع أثناء استلام الفاتورة)
+    const independentPaymentsAgg = await CashFlow.aggregate([
+      {
+        $match: {
+          branch_id: new mongoose.Types.ObjectId(branchId),
+          vendor_id: { $in: activeVendorIds },
+          type: 'VENDOR_PAYMENT',
+          description: { $not: /^دفعة مستقطعة من فاتورة/ } // استبعاد دفعات الفواتير لأننا حسبناها في المتبقي
+        }
+      },
+      { $group: { _id: '$vendor_id', total_independent_paid: { $sum: '$amount' } } }
+    ]);
+
+    // دمج البيانات وتحويلها لخرائط (Maps) لسرعة البحث
+    const invoiceMap = {};
+    invoicesAgg.forEach(item => { invoiceMap[item._id.toString()] = item.total_remaining; });
+
+    const paymentMap = {};
+    independentPaymentsAgg.forEach(item => { paymentMap[item._id.toString()] = item.total_independent_paid; });
+
+    // حساب الدين الفعلي لكل مورد وإضافته للإجمالي العام
+    vendors.forEach(vendor => {
+      const vId = vendor._id.toString();
+      const remainingFromInvoices = invoiceMap[vId] || 0;
+      const independentPaid = paymentMap[vId] || 0;
+
+      // 🚀 الحساب الدقيق: (المتبقي من الفواتير) - (أي دفعات خارجية مستقلة)
+      vendor.total_due = remainingFromInvoices - independentPaid;
+      total_debt += vendor.total_due;
+    });
   }
 
   res.status(200).json({ vendors, total_debt });

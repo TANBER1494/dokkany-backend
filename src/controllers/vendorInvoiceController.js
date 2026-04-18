@@ -63,8 +63,10 @@ const addInvoice = asyncHandler(async (req, res, next) => {
         type: 'VENDOR_PAYMENT',
         amount: numPaid,
         description: `دفعة مستقطعة من فاتورة رقم: ${invoice_number || newInvoice._id.toString().slice(-4)}`,
-        vendor_id: vendor_id,
-        branch_id: branch_id,
+        
+        // 🚀 التعديل هنا: استخدم المتغيرات التي تحتوي على _id الصريح
+        vendor_id: vendor._id, 
+        branch_id: branch._id, 
         organization_id: orgId
       }], { session });
     }

@@ -50,39 +50,42 @@ const getVendors = asyncHandler(async (req, res, next) => {
   let total_debt = 0;
 
   if (activeVendorIds.length > 0) {
-    // 1. حساب إجمالي "المتبقي" من الفواتير لكل مورد
-    const invoicesAgg = await VendorInvoice.aggregate([
-      { $match: { branch_id: new mongoose.Types.ObjectId(branchId), vendor_id: { $in: activeVendorIds }, deleted_at: null } },
-      { $group: { _id: '$vendor_id', total_remaining: { $sum: '$remaining_amount' } } }
+    // 🚀 استخدمنا find لتجاوز مشكلة ObjectId المخفية تماماً
+    const [invoices, independentPayments] = await Promise.all([
+      VendorInvoice.find({ 
+        branch_id: branchId, 
+        vendor_id: { $in: activeVendorIds }, 
+        deleted_at: null 
+      }).select('vendor_id remaining_amount').lean(),
+      
+      CashFlow.find({ 
+        branch_id: branchId, 
+        vendor_id: { $in: activeVendorIds }, 
+        type: 'VENDOR_PAYMENT', 
+        description: { $not: /^دفعة مستقطعة من فاتورة/ } 
+      }).select('vendor_id amount').lean()
     ]);
 
-    // 2. حساب إجمالي "الدفعات المستقلة" (التي لم تُدفع أثناء استلام الفاتورة)
-    const independentPaymentsAgg = await CashFlow.aggregate([
-      {
-        $match: {
-          branch_id: new mongoose.Types.ObjectId(branchId),
-          vendor_id: { $in: activeVendorIds },
-          type: 'VENDOR_PAYMENT',
-          description: { $not: /^دفعة مستقطعة من فاتورة/ } // استبعاد دفعات الفواتير لأننا حسبناها في المتبقي
-        }
-      },
-      { $group: { _id: '$vendor_id', total_independent_paid: { $sum: '$amount' } } }
-    ]);
-
-    // دمج البيانات وتحويلها لخرائط (Maps) لسرعة البحث
+    // تجميع البيانات في الذاكرة (سريع جداً ومقاوم للأخطاء)
     const invoiceMap = {};
-    invoicesAgg.forEach(item => { invoiceMap[item._id.toString()] = item.total_remaining; });
+    invoices.forEach(inv => {
+      const vId = inv.vendor_id.toString();
+      invoiceMap[vId] = (invoiceMap[vId] || 0) + inv.remaining_amount;
+    });
 
     const paymentMap = {};
-    independentPaymentsAgg.forEach(item => { paymentMap[item._id.toString()] = item.total_independent_paid; });
+    independentPayments.forEach(pay => {
+      const vId = pay.vendor_id.toString();
+      paymentMap[vId] = (paymentMap[vId] || 0) + pay.amount;
+    });
 
-    // حساب الدين الفعلي لكل مورد وإضافته للإجمالي العام
+    // حساب الدين الفعلي
     vendors.forEach(vendor => {
       const vId = vendor._id.toString();
       const remainingFromInvoices = invoiceMap[vId] || 0;
       const independentPaid = paymentMap[vId] || 0;
 
-      // 🚀 الحساب الدقيق: (المتبقي من الفواتير) - (أي دفعات خارجية مستقلة)
+      // 🚀 المعادلة الذهبية
       vendor.total_due = remainingFromInvoices - independentPaid;
       total_debt += vendor.total_due;
     });

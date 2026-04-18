@@ -9,126 +9,77 @@ const asyncHandler = require('../utils/asyncHandler');
 const AppError = require('../utils/AppError');
 
 // ==========================================
-// 👑 1. الداشبورد الشامل للمالك (Ultra Optimized O(1) DB Calls 🚀)
+// 👑 1. الداشبورد الشامل للمالك (Bulletproof DB Calls 🚀)
 // ==========================================
 const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
   const orgId = req.user.organization_id;
 
-  // 1. جلب كل فروع المالك ككائنات خفيفة
   const branches = await Branch.find({ organization_id: orgId }).lean();
   if (!branches || branches.length === 0) {
-    return res
-      .status(200)
-      .json({
-        grand_totals: {
-          total_market_debts_for_us: 0,
-          total_market_debts_on_us: 0,
-        },
-        branches: [],
-      });
+    return res.status(200).json({ grand_totals: { total_market_debts_for_us: 0, total_market_debts_on_us: 0 }, branches: [] });
   }
 
   const branchIds = branches.map((b) => b._id);
 
-  // 2. 🚀 [الضربة القاضية] 6 استعلامات فقط لكل الفروع في نفس اللحظة!
+  // 🚀 استخدمنا find بدلاً من aggregate لتجنب أخطاء (String vs ObjectId) الخفية
   const [
     openShifts,
-    invoicesAgg,
-    vendorPaymentsAgg,
-    customerDebtsAgg,
-    lowStockAgg,
+    allInvoices,
+    allIndependentPayments,
+    customerDebts,
+    products
   ] = await Promise.all([
-    // أ. جلب كل الورديات المفتوحة لكل الفروع
-    Shift.find({ branch_id: { $in: branchIds }, status: 'OPEN' })
-      .populate('acknowledged_by', 'name')
-      .lean(),
-    // ب. تجميع كل فواتير الموردين مقسمة بالفرع
-    VendorInvoice.aggregate([
-      { $match: { branch_id: { $in: branchIds }, deleted_at: null } },
-      { $group: { _id: '$branch_id', total: { $sum: '$total_amount' } } },
-    ]),
-    // ج. تجميع كل مدفوعات الموردين مقسمة بالفرع
-    CashFlow.aggregate([
-      { $match: { branch_id: { $in: branchIds }, type: 'VENDOR_PAYMENT' } },
-      { $group: { _id: '$branch_id', total: { $sum: '$amount' } } },
-    ]),
-    // د. تجميع كل ديون الزبائن مقسمة بالفرع ونوع الحركة (سحب / سداد)
-    CustomerDebt.aggregate([
-      { $match: { branch_id: { $in: branchIds }, deleted_at: null } },
-      {
-        $group: {
-          _id: { branch: '$branch_id', type: '$type' },
-          total: { $sum: '$amount' },
-        },
-      },
-    ]),
-    // هـ. إحصاء المنتجات النواقص مقسمة بالفرع
-    Product.aggregate([
-      {
-        $match: {
-          branch_id: { $in: branchIds },
-          deleted_at: null,
-          stock_quantity: { $lte: 5 },
-        },
-      },
-      { $group: { _id: '$branch_id', count: { $sum: 1 } } },
-    ]),
+    Shift.find({ branch_id: { $in: branchIds }, status: 'OPEN' }).populate('acknowledged_by', 'name').lean(),
+    VendorInvoice.find({ branch_id: { $in: branchIds }, deleted_at: null }).select('branch_id remaining_amount').lean(),
+    CashFlow.find({ branch_id: { $in: branchIds }, type: 'VENDOR_PAYMENT', description: { $not: /^دفعة مستقطعة من فاتورة/ } }).select('branch_id amount').lean(),
+    CustomerDebt.find({ branch_id: { $in: branchIds }, deleted_at: null }).select('branch_id type amount').lean(),
+    Product.find({ branch_id: { $in: branchIds }, deleted_at: null, stock_quantity: { $lte: 5 } }).select('branch_id').lean()
   ]);
 
-  // 3. جلب حركات الخزينة للورديات المفتوحة فقط لحساب الـ Pulse (النبض الحالي)
   const openShiftIds = openShifts.map((s) => s._id);
-  const activeCashFlowsAgg = await CashFlow.aggregate([
-    { $match: { shift_id: { $in: openShiftIds } } },
-    {
-      $group: {
-        _id: { shift: '$shift_id', type: '$type' },
-        total: { $sum: '$amount' },
-      },
-    },
-  ]);
+  const activeCashFlows = await CashFlow.find({ shift_id: { $in: openShiftIds } }).select('shift_id type amount').lean();
 
   // ==========================================
   // 🧠 4. بناء خرائط الذاكرة (Hash Maps) لسرعة الوصول O(1)
   // ==========================================
 
-  // خريطة ديون الموردين (فواتير - سداد)
+  // 🚀 خريطة ديون الموردين (المتبقي من الفواتير - الدفعات المستقلة)
   const vendorDebtMap = {};
-  invoicesAgg.forEach((inv) => {
-    vendorDebtMap[inv._id.toString()] = { invoices: inv.total, payments: 0 };
+  allInvoices.forEach((inv) => {
+    const bId = inv.branch_id.toString();
+    if (!vendorDebtMap[bId]) vendorDebtMap[bId] = 0;
+    vendorDebtMap[bId] += inv.remaining_amount; // نجمع المتبقي فقط
   });
-  vendorPaymentsAgg.forEach((pay) => {
-    if (!vendorDebtMap[pay._id.toString()])
-      vendorDebtMap[pay._id.toString()] = { invoices: 0, payments: 0 };
-    vendorDebtMap[pay._id.toString()].payments = pay.total;
+  allIndependentPayments.forEach((pay) => {
+    const bId = pay.branch_id.toString();
+    if (!vendorDebtMap[bId]) vendorDebtMap[bId] = 0;
+    vendorDebtMap[bId] -= pay.amount; // نخصم أي دفعة مستقلة
   });
 
-  // خريطة ديون الزبائن (سحب - سداد)
   const customerDebtMap = {};
-  customerDebtsAgg.forEach((debt) => {
-    const bId = debt._id.branch.toString();
+  customerDebts.forEach((debt) => {
+    const bId = debt.branch_id.toString();
     if (!customerDebtMap[bId]) customerDebtMap[bId] = { credit: 0, payment: 0 };
-    if (debt._id.type === 'CREDIT') customerDebtMap[bId].credit = debt.total;
-    if (debt._id.type === 'PAYMENT') customerDebtMap[bId].payment = debt.total;
+    if (debt.type === 'CREDIT') customerDebtMap[bId].credit += debt.amount;
+    if (debt.type === 'PAYMENT') customerDebtMap[bId].payment += debt.amount;
   });
 
-  // خريطة النواقص
   const lowStockMap = {};
-  lowStockAgg.forEach((stock) => {
-    lowStockMap[stock._id.toString()] = stock.count;
+  products.forEach((stock) => {
+    const bId = stock.branch_id.toString();
+    lowStockMap[bId] = (lowStockMap[bId] || 0) + 1;
   });
 
-  // خريطة نبض الدرج للورديات المفتوحة
   const pulseMap = {};
-  activeCashFlowsAgg.forEach((cf) => {
-    const sId = cf._id.shift.toString();
+  activeCashFlows.forEach((cf) => {
+    const sId = cf.shift_id.toString();
     if (!pulseMap[sId]) pulseMap[sId] = { income: 0, expenses: 0 };
-    if (cf._id.type === 'INCOME') pulseMap[sId].income += cf.total;
-    if (cf._id.type === 'EXPENSE' || cf._id.type === 'VENDOR_PAYMENT')
-      pulseMap[sId].expenses += cf.total;
+    if (cf.type === 'INCOME') pulseMap[sId].income += cf.amount;
+    if (cf.type === 'EXPENSE' || cf.type === 'VENDOR_PAYMENT') pulseMap[sId].expenses += cf.amount;
   });
 
   // ==========================================
-  // 🧩 5. تجميع البيانات النهائية للفروع
+  // 🧩 5. تجميع البيانات النهائية
   // ==========================================
   let grandTotalCustomerDebts = 0;
   let grandTotalVendorDebts = 0;
@@ -136,45 +87,32 @@ const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
   const branchesData = branches.map((branch) => {
     const bId = branch._id.toString();
 
-    // حساب الوردية إن وجدت
     const shift = openShifts.find((s) => s.branch_id.toString() === bId);
     let shiftDetails = null;
     if (shift) {
-      const pulse = pulseMap[shift._id.toString()] || {
-        income: 0,
-        expenses: 0,
-      };
+      const pulse = pulseMap[shift._id.toString()] || { income: 0, expenses: 0 };
       const currentPulse = shift.starting_cash + pulse.income - pulse.expenses;
       shiftDetails = {
         shift_id: shift._id,
-        cashier_name: shift.is_acknowledged
-          ? shift.acknowledged_by?.name || 'غير معروف'
-          : 'بانتظار استلام الدرج',
+        cashier_name: shift.is_acknowledged ? shift.acknowledged_by?.name || 'غير معروف' : 'بانتظار استلام الدرج',
         start_time: shift.start_time,
         starting_cash: shift.starting_cash,
         expected_cash: currentPulse,
       };
     }
 
-    // حساب الديون
-    const vDebt = vendorDebtMap[bId] || { invoices: 0, payments: 0 };
-    const branchVendorDebts = vDebt.invoices - vDebt.payments;
+    // 🚀 تطبيق الدين الصحيح والمقاوم للأخطاء
+    const branchVendorDebts = vendorDebtMap[bId] || 0;
     grandTotalVendorDebts += branchVendorDebts;
 
     const cDebt = customerDebtMap[bId] || { credit: 0, payment: 0 };
     const branchCustomerDebts = cDebt.credit - cDebt.payment;
     grandTotalCustomerDebts += branchCustomerDebts;
 
-    // حساب الاشتراك
     let daysLeft = 0;
-    const targetDate =
-      branch.subscription_status === 'TRIAL'
-        ? branch.trial_ends_at
-        : branch.subscription_ends_at;
+    const targetDate = branch.subscription_status === 'TRIAL' ? branch.trial_ends_at : branch.subscription_ends_at;
     if (targetDate) {
-      const diffTime = Math.ceil(
-        (new Date(targetDate) - new Date()) / (1000 * 60 * 60 * 24)
-      );
+      const diffTime = Math.ceil((new Date(targetDate) - new Date()) / (1000 * 60 * 60 * 24));
       daysLeft = diffTime > 0 ? diffTime : 0;
     }
 
@@ -185,7 +123,7 @@ const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
       days_left: daysLeft,
       active_shift: shiftDetails,
       debts_for_us: branchCustomerDebts,
-      debts_on_us: branchVendorDebts,
+      debts_on_us: branchVendorDebts, // 👈 الرقم الموثوق
       low_stock_count: lowStockMap[bId] || 0,
     };
   });

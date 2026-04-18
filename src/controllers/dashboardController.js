@@ -30,7 +30,7 @@ const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
 
   const branchIds = branches.map((b) => b._id);
 
-  // 2. 🚀 [الضربة القاضية] 6 استعلامات فقط لكل الفروع في نفس اللحظة!
+  // 2. 🚀 [الضربة القاضية] استعلامات موحدة لحساب الديون بدقة متناهية
   const [
     openShifts,
     invoicesAgg,
@@ -42,16 +42,25 @@ const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
     Shift.find({ branch_id: { $in: branchIds }, status: 'OPEN' })
       .populate('acknowledged_by', 'name')
       .lean(),
-    // ب. تجميع كل فواتير الموردين مقسمة بالفرع
+      
+    // 🚀 ب. تجميع كل فواتير الموردين (نجمع المتبقي فقط وليس الإجمالي)
     VendorInvoice.aggregate([
       { $match: { branch_id: { $in: branchIds }, deleted_at: null } },
-      { $group: { _id: '$branch_id', total: { $sum: '$total_amount' } } },
+      { $group: { _id: '$branch_id', total_remaining: { $sum: '$remaining_amount' } } },
     ]),
-    // ج. تجميع كل مدفوعات الموردين مقسمة بالفرع
+    
+    // 🚀 ج. تجميع الدفعات "المستقلة" فقط (نستثني الدفعات التي تمت داخل الفاتورة)
     CashFlow.aggregate([
-      { $match: { branch_id: { $in: branchIds }, type: 'VENDOR_PAYMENT' } },
-      { $group: { _id: '$branch_id', total: { $sum: '$amount' } } },
+      { 
+        $match: { 
+          branch_id: { $in: branchIds }, 
+          type: 'VENDOR_PAYMENT',
+          description: { $not: /^دفعة مستقطعة من فاتورة/ } 
+        } 
+      },
+      { $group: { _id: '$branch_id', total_independent: { $sum: '$amount' } } },
     ]),
+    
     // د. تجميع كل ديون الزبائن مقسمة بالفرع ونوع الحركة (سحب / سداد)
     CustomerDebt.aggregate([
       { $match: { branch_id: { $in: branchIds }, deleted_at: null } },
@@ -62,6 +71,7 @@ const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
         },
       },
     ]),
+    
     // هـ. إحصاء المنتجات النواقص مقسمة بالفرع
     Product.aggregate([
       {
@@ -91,15 +101,15 @@ const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
   // 🧠 4. بناء خرائط الذاكرة (Hash Maps) لسرعة الوصول O(1)
   // ==========================================
 
-  // خريطة ديون الموردين (فواتير - سداد)
+  // 🚀 خريطة ديون الموردين (المتبقي من الفواتير - الدفعات المستقلة)
   const vendorDebtMap = {};
   invoicesAgg.forEach((inv) => {
-    vendorDebtMap[inv._id.toString()] = { invoices: inv.total, payments: 0 };
+    vendorDebtMap[inv._id.toString()] = { remaining: inv.total_remaining, independent_payments: 0 };
   });
   vendorPaymentsAgg.forEach((pay) => {
     if (!vendorDebtMap[pay._id.toString()])
-      vendorDebtMap[pay._id.toString()] = { invoices: 0, payments: 0 };
-    vendorDebtMap[pay._id.toString()].payments = pay.total;
+      vendorDebtMap[pay._id.toString()] = { remaining: 0, independent_payments: 0 };
+    vendorDebtMap[pay._id.toString()].independent_payments = pay.total_independent;
   });
 
   // خريطة ديون الزبائن (سحب - سداد)
@@ -156,9 +166,9 @@ const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
       };
     }
 
-    // حساب الديون
-    const vDebt = vendorDebtMap[bId] || { invoices: 0, payments: 0 };
-    const branchVendorDebts = vDebt.invoices - vDebt.payments;
+    // 🚀 حساب الديون الخاص بالموردين (تطبيق المعادلة الذهبية)
+    const vDebt = vendorDebtMap[bId] || { remaining: 0, independent_payments: 0 };
+    const branchVendorDebts = vDebt.remaining - vDebt.independent_payments;
     grandTotalVendorDebts += branchVendorDebts;
 
     const cDebt = customerDebtMap[bId] || { credit: 0, payment: 0 };

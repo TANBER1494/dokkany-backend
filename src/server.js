@@ -100,19 +100,6 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-
-// ==========================================
-// 🏠 الواجهة الرئيسية للسيرفر
-// ==========================================
-app.get('/', (req, res) => {
-  res.send(`
-    <div style="font-family: system-ui, sans-serif; text-align: center; padding-top: 10vh; background-color: #f8fafc; height: 100vh; margin: -8px;">
-      <h1 style="color: #4f46e5; font-size: 3rem; margin-bottom: 10px;">🚀 سيرفر دكاني يعمل بنجاح!</h1>
-      <p style="color: #64748b; font-size: 1.2rem;">الباك إند متصل وجاهز لاستقبال الطلبات من الكاشير والمالك.</p>
-    </div>
-  `);
-});
-
 // ==========================================
 // 🌐 3. توجيه المسارات (API Routes)
 // ==========================================

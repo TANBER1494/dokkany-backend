@@ -40,6 +40,9 @@ const addVendor = asyncHandler(async (req, res, next) => {
 // ==========================================
 // 📋 2. جلب موردين فرع محدد (مع حساب إجمالي الديون للنشطين) - 🚀 جراحة محاسبية
 // ==========================================
+// ==========================================
+// 📋 2. جلب موردين فرع محدد (مقاوم لأخطاء قواعد البيانات 🚀)
+// ==========================================
 const getVendors = asyncHandler(async (req, res, next) => {
   const branchId = req.user.role === 'CASHIER' ? req.user.branch_id : req.query.branch_id;
   if (!branchId) return next(new AppError('يجب تحديد الفرع', 400));
@@ -50,23 +53,20 @@ const getVendors = asyncHandler(async (req, res, next) => {
   let total_debt = 0;
 
   if (activeVendorIds.length > 0) {
-    // 🚀 استخدمنا find لتجاوز مشكلة ObjectId المخفية تماماً
+    // 🚀 الجراحة الدقيقة: حذفنا branch_id تماماً من هنا، واعتمدنا على الموردين فقط!
     const [invoices, independentPayments] = await Promise.all([
       VendorInvoice.find({ 
-        branch_id: branchId, 
-        vendor_id: { $in: activeVendorIds }, 
+        vendor_id: { $in: activeVendorIds }, // 👈 السر هنا
         deleted_at: null 
       }).select('vendor_id remaining_amount').lean(),
       
       CashFlow.find({ 
-        branch_id: branchId, 
-        vendor_id: { $in: activeVendorIds }, 
+        vendor_id: { $in: activeVendorIds }, // 👈 والسر هنا
         type: 'VENDOR_PAYMENT', 
         description: { $not: /^دفعة مستقطعة من فاتورة/ } 
       }).select('vendor_id amount').lean()
     ]);
 
-    // تجميع البيانات في الذاكرة (سريع جداً ومقاوم للأخطاء)
     const invoiceMap = {};
     invoices.forEach(inv => {
       const vId = inv.vendor_id.toString();
@@ -79,13 +79,12 @@ const getVendors = asyncHandler(async (req, res, next) => {
       paymentMap[vId] = (paymentMap[vId] || 0) + pay.amount;
     });
 
-    // حساب الدين الفعلي
     vendors.forEach(vendor => {
       const vId = vendor._id.toString();
       const remainingFromInvoices = invoiceMap[vId] || 0;
       const independentPaid = paymentMap[vId] || 0;
 
-      // 🚀 المعادلة الذهبية
+      // 🚀 المعادلة الذهبية ستعمل الآن بامتياز
       vendor.total_due = remainingFromInvoices - independentPaid;
       total_debt += vendor.total_due;
     });

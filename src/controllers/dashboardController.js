@@ -4,12 +4,12 @@ const CashFlow = require('../models/CashFlow');
 const CustomerDebt = require('../models/CustomerDebt');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
-
+const Vendor = require('../models/Vendor');
 const asyncHandler = require('../utils/asyncHandler');
 const AppError = require('../utils/AppError');
 
 // ==========================================
-// 👑 1. الداشبورد الشامل للمالك (Bulletproof DB Calls 🚀)
+// 👑 1. الداشبورد الشامل للمالك (Bulletproof Routing 🚀)
 // ==========================================
 const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
   const orgId = req.user.organization_id;
@@ -21,7 +21,13 @@ const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
 
   const branchIds = branches.map((b) => b._id);
 
-  // 🚀 استخدمنا find بدلاً من aggregate لتجنب أخطاء (String vs ObjectId) الخفية
+  // 🚀 1. جلب كل الموردين لعمل "خريطة توجيه" (Vendor -> Branch)
+  const vendors = await Vendor.find({ organization_id: orgId, deleted_at: null }).select('_id branch_id').lean();
+  const vendorIds = vendors.map(v => v._id);
+  const vendorToBranchMap = {};
+  vendors.forEach(v => { vendorToBranchMap[v._id.toString()] = v.branch_id.toString(); });
+
+  // 🚀 2. جلب المدفوعات بدلالة الموردين لتجنب أخطاء branch_id
   const [
     openShifts,
     allInvoices,
@@ -31,7 +37,10 @@ const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
   ] = await Promise.all([
     Shift.find({ branch_id: { $in: branchIds }, status: 'OPEN' }).populate('acknowledged_by', 'name').lean(),
     VendorInvoice.find({ branch_id: { $in: branchIds }, deleted_at: null }).select('branch_id remaining_amount').lean(),
-    CashFlow.find({ branch_id: { $in: branchIds }, type: 'VENDOR_PAYMENT', description: { $not: /^دفعة مستقطعة من فاتورة/ } }).select('branch_id amount').lean(),
+    
+    // 🔥 البحث بالمورد وليس بالفرع!
+    CashFlow.find({ vendor_id: { $in: vendorIds }, type: 'VENDOR_PAYMENT', description: { $not: /^دفعة مستقطعة من فاتورة/ } }).select('vendor_id amount').lean(),
+    
     CustomerDebt.find({ branch_id: { $in: branchIds }, deleted_at: null }).select('branch_id type amount').lean(),
     Product.find({ branch_id: { $in: branchIds }, deleted_at: null, stock_quantity: { $lte: 5 } }).select('branch_id').lean()
   ]);
@@ -40,20 +49,24 @@ const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
   const activeCashFlows = await CashFlow.find({ shift_id: { $in: openShiftIds } }).select('shift_id type amount').lean();
 
   // ==========================================
-  // 🧠 4. بناء خرائط الذاكرة (Hash Maps) لسرعة الوصول O(1)
+  // 🧠 4. تجميع الديون عبر خريطة الذاكرة الموجهة
   // ==========================================
-
-  // 🚀 خريطة ديون الموردين (المتبقي من الفواتير - الدفعات المستقلة)
   const vendorDebtMap = {};
+
   allInvoices.forEach((inv) => {
     const bId = inv.branch_id.toString();
     if (!vendorDebtMap[bId]) vendorDebtMap[bId] = 0;
-    vendorDebtMap[bId] += inv.remaining_amount; // نجمع المتبقي فقط
+    vendorDebtMap[bId] += inv.remaining_amount; // إضافة الفواتير
   });
+
   allIndependentPayments.forEach((pay) => {
-    const bId = pay.branch_id.toString();
-    if (!vendorDebtMap[bId]) vendorDebtMap[bId] = 0;
-    vendorDebtMap[bId] -= pay.amount; // نخصم أي دفعة مستقلة
+    // 🔥 توجيه الدفعة لفرعها الصحيح بناءً على المورد!
+    const vId = pay.vendor_id?.toString();
+    const bId = vendorToBranchMap[vId]; 
+    if (bId) {
+      if (!vendorDebtMap[bId]) vendorDebtMap[bId] = 0;
+      vendorDebtMap[bId] -= pay.amount; // خصم المدفوعات المستقلة
+    }
   });
 
   const customerDebtMap = {};
@@ -101,7 +114,7 @@ const getOwnerMasterDashboard = asyncHandler(async (req, res, next) => {
       };
     }
 
-    // 🚀 تطبيق الدين الصحيح والمقاوم للأخطاء
+    // 🚀 تطبيق الدين النهائي السليم
     const branchVendorDebts = vendorDebtMap[bId] || 0;
     grandTotalVendorDebts += branchVendorDebts;
 

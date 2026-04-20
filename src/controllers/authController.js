@@ -41,7 +41,7 @@ const registerOwner = asyncHandler(async (req, res, next) => {
 
   const existingUser = await User.findOne({ phone }).lean(); // .lean() لسرعة الفحص
   if (existingUser) {
-    return next(new AppError('رقم الهاتف مسجل بالفعل في النظام', 400));
+    return next(new AppError('رقم الموبايل دا مسجل بالفعل في النظام ,استخدم رقم موبايل مختلف', 400));
   }
 
   const session = await mongoose.startSession();
@@ -93,7 +93,7 @@ const registerOwner = asyncHandler(async (req, res, next) => {
     session.endSession();
 
     res.status(201).json({
-      message: 'تم تأسيس النظام وإنشاء حساب المالك بنجاح',
+      message: 'تم إنشاء حساب المالك بنجاح',
       token: accessToken,
       refresh_token: refreshToken,
       user: {

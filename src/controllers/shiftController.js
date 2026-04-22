@@ -8,7 +8,7 @@ const User = require('../models/User');
 const bcrypt = require('bcryptjs'); 
 const Notification = require('../models/Notification');
 const socket = require('../models/socket');
-
+const { sendAppNotification } = require('../controllers/notificationController');
 const asyncHandler = require('../utils/asyncHandler');
 const AppError = require('../utils/AppError');
 
@@ -184,13 +184,15 @@ const closeShift = asyncHandler(async (req, res, next) => {
       const branch = await Branch.findById(branchId).lean();
       const cashierName = shift.acknowledged_by ? shift.acknowledged_by.name : req.user.name;
       
-      const notification = await Notification.create({
-        organization_id: orgId, branch_id: branchId, target_role: 'OWNER',
+      // 🚀 استدعاء المدفع الذكي الذي سيرسل للإشعارات الداخلية والموبايل (FCM) معاً!
+      await sendAppNotification({
         title: 'تسليم درج وإغلاق وردية',
         message: `قام (${cashierName}) بإنهاء الوردية في فرع (${branch.name}). الصافي المورّد: ${netShiftYield} ج.م.`,
-        type: 'SHIFT_END', link: '/owner/shifts' 
+        type: 'SHIFT_END', 
+        target_role: 'OWNER',
+        organization_id: orgId,
+        link: '/owner/shifts' 
       });
-      socket.getIO().to(orgId.toString()).emit('new_notification', notification);
     }
   } catch (err) { console.error('Notif Error', err); }
 
@@ -232,17 +234,21 @@ const acknowledgeShift = asyncHandler(async (req, res, next) => {
   if (!activeShift) return next(new AppError('لا توجد وردية معلقة للاستلام، أو تم استلامها بالفعل', 400));
 
   // 🚀 إرسال الإشعار
+// 🚀 إرسال الإشعار
   try {
     const owner = await User.findOne({ organization_id: orgId, role: 'OWNER' }).select('notifications').lean();
     if (owner?.notifications?.shift_opened !== false) {
       const branch = await Branch.findById(branchId).lean();
-      const notification = await Notification.create({
-        organization_id: orgId, branch_id: branchId, target_role: 'OWNER',
+      
+      // 🚀 استدعاء المدفع الذكي 
+      await sendAppNotification({
         title: 'استلام وردية (بصمة حضور)',
         message: `حضر (${employee.name}) وأكّد استلام عهدة الدرج في فرع (${branch.name}).`,
-        type: 'SHIFT_ACK', link: '/owner/shifts'
+        type: 'SHIFT_ACK', 
+        target_role: 'OWNER',
+        organization_id: orgId,
+        link: '/owner/shifts'
       });
-      socket.getIO().to(orgId.toString()).emit('new_notification', notification);
     }
   } catch (err) { console.error('Notif Error', err); }
 

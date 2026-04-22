@@ -82,7 +82,7 @@ const userSchema = new mongoose.Schema(
       large_expense: { type: Boolean, default: true },
       vendor_payment: { type: Boolean, default: true },
       new_invoice: { type: Boolean, default: true },
-      invoice_deleted: { type: Boolean, default: true }
+      invoice_deleted: { type: Boolean, default: true },
     },
     current_session_id: {
       type: String,
@@ -94,11 +94,14 @@ const userSchema = new mongoose.Schema(
       default: null,
       select: false, // مخفي للأمان (لا يرجع في استعلامات البحث العادية)
     },
+    fcm_token: {
+      type: String,
+      default: null,
+    },
   },
   {
     timestamps: true,
   }
-  ,
 );
 
 module.exports = mongoose.model('User', userSchema);

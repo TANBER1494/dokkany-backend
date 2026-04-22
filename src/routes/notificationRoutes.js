@@ -7,7 +7,8 @@ const {
   markAsRead, 
   markAllAsRead, 
   deleteNotification, 
-  deleteAllReadNotifications 
+  deleteAllReadNotifications ,
+  sendAppNotification,
 } = require('../controllers/notificationController');
 
 // ==========================================
@@ -28,5 +29,6 @@ router.delete('/read', deleteAllReadNotifications);
 // 🚀 المسارات المتغيرة (Dynamic)
 router.put('/:id/read', markAsRead);
 router.delete('/:id', deleteNotification);
+router.post('/send', sendAppNotification);
 
 module.exports = router;

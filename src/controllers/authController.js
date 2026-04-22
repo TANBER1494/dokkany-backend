@@ -13,17 +13,18 @@ const AppError = require('../utils/AppError');
 // ==========================================
 // 🛠️ دالة مساعدة لتوليد التوكنز المزدوجة (Access & Refresh)
 // ==========================================
+
 const generateTokens = (userId, sessionId) => {
   const accessToken = jwt.sign(
     { id: userId, session_id: sessionId },
     process.env.JWT_SECRET,
-    { expiresIn: '15m' }
+    { expiresIn: '15m' } 
   );
 
   const refreshToken = jwt.sign(
     { id: userId },
     process.env.JWT_REFRESH_SECRET,
-    { expiresIn: '30d' }
+    { expiresIn: '30d' } 
   );
 
   return { accessToken, refreshToken };
@@ -138,12 +139,12 @@ const login = asyncHandler(async (req, res, next) => {
     return next(new AppError('هذا الحساب معطل حالياً، راجع الإدارة', 403));
   }
 
-  const newSessionId = crypto.randomBytes(16).toString('hex');
-  const { accessToken, refreshToken } = generateTokens(user._id, newSessionId);
+  const newSessionId = 'ACTIVE'; // توحيد المعرف لدعم الأجهزة المتعددة
+const { accessToken, refreshToken } = generateTokens(user._id, newSessionId);
 
-  user.current_session_id = newSessionId;
-  user.refresh_token = refreshToken;
-  await user.save();
+user.current_session_id = newSessionId;
+user.refresh_token = 'ACTIVE_SESSION'; // علامة للجلسة النشطة
+await user.save();
 
   res.status(200).json({
     message: 'تم تسجيل الدخول بنجاح',
@@ -159,59 +160,63 @@ const login = asyncHandler(async (req, res, next) => {
   });
 });
 
-// ==========================================
-// ♻️ 3. تجديد الجلسة الصامت (Silent Refresh)
-// ==========================================
+// في دالة refreshToken: استبدلها بالكامل بهذا الكود (بدون bcrypt.compare)
 const refreshToken = asyncHandler(async (req, res, next) => {
   const { refresh_token } = req.body;
-
-  if (!refresh_token) {
-    return next(new AppError('توكن التجديد مفقود، يرجى تسجيل الدخول مجدداً', 401));
-  }
+  if (!refresh_token) return next(new AppError('توكن التجديد مفقود', 401));
 
   try {
+    // 1. التحقق من التوكن برمجياً (JWT Verification)
     const decoded = jwt.verify(refresh_token, process.env.JWT_REFRESH_SECRET);
 
-    // 1. جلب المستخدم مع التوكن المشفر
-    const user = await User.findById(decoded.id).select('+refresh_token');
-
-    if (!user || !user.refresh_token) {
-      return next(new AppError('غير مصرح', 403));
+    // 2. جلب المستخدم والتأكد من أنه لم يتم طرده يدوياً (current_session_id !== null)
+    const user = await User.findById(decoded.id);
+    if (!user || !user.current_session_id) {
+      return next(new AppError('الجلسة غير صالحة أو تم تسجيل الخروج', 403));
     }
 
-    // 2. مقارنة التوكن المرسل بالتوكن المشفر في قاعدة البيانات
-    const isValidToken = await bcrypt.compare(refresh_token, user.refresh_token);
-    if (!isValidToken) {
-       return next(new AppError('توكن التجديد غير صالح أو تم تسجيل الدخول من جهاز آخر', 403));
-    }
-
-    // ==========================================
-    // 🚀 SECURITY & UX FIX: إيقاف الـ Rotation لمنع خروج المستخدم على الموبايل
-    // ==========================================
-    // نكتفي بتوليد Access Token جديد فقط (مدته 15 دقيقة)
-    const currentSessionId = user.current_session_id || crypto.randomBytes(16).toString('hex');
-    
+    // 3. توليد Access Token جديد فقط (بنفس الـ Session ID الموحد)
     const newAccessToken = jwt.sign(
-      { id: user._id, session_id: currentSessionId },
+      { id: user._id, session_id: 'ACTIVE' },
       process.env.JWT_SECRET,
-      { expiresIn: '15m' }
+      { expiresIn: '15m' } // ⚠️ أعدها لـ 15m بعد التأكد من نجاح التجربة
     );
-
-    // 🛡️ لا نقوم بتوليد Refresh Token جديد ولا نقوم بالكتابة على الداتابيز
-    // هذا يمنع الـ (Desync) لو انقطع الإنترنت أثناء التجديد، ويجعل الجلسة مستقرة 100%
 
     res.status(200).json({
       token: newAccessToken,
-      refresh_token: refresh_token, // 👈 نعيد نفس توكن التجديد القديم كما هو للمتصفح
+      refresh_token: refresh_token, 
     });
-
   } catch (error) {
-    return next(new AppError('انتهت صلاحية الجلسة بالكامل (30 يوم)، يرجى تسجيل الدخول من جديد', 403));
+    return next(new AppError('انتهت صلاحية الجلسة بالكامل، يرجى الدخول مجدداً', 403));
   }
 });
+
+// ==========================================
+// 📱 4. تحديث توكن الإشعارات (FCM Token)
+// ==========================================
+const updateFcmToken = asyncHandler(async (req, res, next) => {
+  const { fcm_token } = req.body;
+  
+  if (!fcm_token) return next(new AppError('التوكن مفقود', 400));
+
+  // تحديث التوكن في الداتابيز للمستخدم الحالي
+  req.user.fcm_token = fcm_token;
+  await req.user.save();
+
+  res.status(200).json({ message: 'تم ربط الجهاز بنظام الإشعارات بنجاح' });
+});
+
+// تأكد من تصديرها في الأسفل:
+module.exports = {
+  registerOwner,
+  login,
+  refreshToken,
+  updateFcmToken // 👈 أضف هذه
+};
 
 module.exports = {
   registerOwner,
   login,
   refreshToken,
+  updateFcmToken
 };

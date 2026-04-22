@@ -31,19 +31,13 @@ const protect = async (req, res, next) => {
         .json({ message: 'إجراء أمني: حساب المستخدم لم يعد موجوداً.' });
     }
 
+   // ==========================================
+    // 🛡️ 4. الأجهزة المتعددة والـ (Instant Kill Switch) 🚨
     // ==========================================
-    // 🛡️ 4. الجلسة الأحادية والـ (Instant Kill Switch) 🚨
-    // ==========================================
-    // إذا تم مسح الجلسة (null) أو تم الدخول من جهاز آخر (تغير الـ ID)، اطرده فوراً!
-    if (
-      !req.user.current_session_id || 
-      decoded.session_id !== req.user.current_session_id
-    ) {
-      return res.status(401).json({
-        message: 'تم إنهاء جلستك الحالية لحماية النظام (أو تم تغيير بيانات الدخول)، يرجى تسجيل الدخول من جديد.',
-      });
-    }
-
+   
+if (!req.user.current_session_id) {
+  return res.status(401).json({ message: 'انتهت الجلسة، يرجى تسجيل الدخول.' });
+}
     // 5. فحص حالة الحساب
     if (req.user.status !== 'ACTIVE') {
       return res

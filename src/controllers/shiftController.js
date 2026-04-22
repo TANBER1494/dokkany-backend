@@ -95,6 +95,7 @@ const getActiveShift = asyncHandler(async (req, res, next) => {
   const activeShift = await Shift.findOne({ branch_id: branchId, status: 'OPEN' })
     .populate('cashier_id', 'name phone')
     .populate('acknowledged_by', 'name')
+    .populate('branch_id', 'name')
     .lean();
 
   if (!activeShift) return next(new AppError('لا توجد وردية مفتوحة حالياً في هذا الفرع', 404));

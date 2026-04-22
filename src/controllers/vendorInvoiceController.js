@@ -106,8 +106,13 @@ const deleteInvoice = asyncHandler(async (req, res, next) => {
   const invoice = await VendorInvoice.findOne({ _id: id, deleted_at: null }).populate('vendor_id', 'name');
   if (!invoice) return next(new AppError('الفاتورة غير موجودة', 404));
 
-  const branch = await Branch.findById(invoice.branch_id);
-  if (!branch) return next(new AppError('الفرع غير موجود', 404));
+// 🛡️ SECURITY FIX: Verify the branch belongs to the user's organization!
+  const branch = await Branch.findOne({ 
+    _id: invoice.branch_id, 
+    organization_id: req.user.organization_id 
+  });
+  
+  if (!branch) return next(new AppError('إجراء أمني: الفاتورة لا تتبع لمؤسستك أو الفرع غير موجود', 403));
 
   if (req.user.role === 'CASHIER') {
     const diffInMinutes = (new Date() - new Date(invoice.createdAt)) / (1000 * 60);
@@ -182,8 +187,13 @@ const updateInvoice = asyncHandler(async (req, res, next) => {
   const invoice = await VendorInvoice.findOne({ _id: id, deleted_at: null }).populate('vendor_id', 'name');
   if (!invoice) return next(new AppError('الفاتورة غير موجودة', 404));
 
-  const branch = await Branch.findById(invoice.branch_id);
+// 🛡️ SECURITY FIX: Verify the branch belongs to the user's organization!
+  const branch = await Branch.findOne({ 
+    _id: invoice.branch_id, 
+    organization_id: req.user.organization_id 
+  });
 
+  if (!branch) return next(new AppError('إجراء أمني: الفاتورة لا تتبع لمؤسستك أو الفرع غير موجود', 403));
   if (req.user.role === 'CASHIER') {
     const diffInMinutes = (new Date() - new Date(invoice.createdAt)) / (1000 * 60);
     const isTimeExpired = diffInMinutes > branch.deletion_window_minutes;

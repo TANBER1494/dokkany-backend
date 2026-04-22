@@ -36,7 +36,7 @@ connectDB();
 // 🛡️ 2. طبقات الحماية والأمن (Security Middlewares)
 // ==========================================
 // 🚀 [الضربة القاضية للثغرات] تعريف البروكسي للسيرفرات السحابية
-app.set('trust proxy', 1);
+app.set('trust proxy', 'loopback, linklocal, uniquelocal');
 
 app.use(helmet({
   frameguard: false

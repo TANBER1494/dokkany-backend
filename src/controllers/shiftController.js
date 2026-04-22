@@ -115,41 +115,45 @@ const closeShift = asyncHandler(async (req, res, next) => {
   if (isNaN(numEnding) || numEnding < 0) {
     return next(new AppError('يجب إدخال المبلغ الفعلي الموجود في الدرج بدقة', 400));
   }
+// 🛡️ [الضربة الذرية - Atomic Lock] تمت إزالة الـ findOneAndUpdate الخارجي
+  // سيتم عمل الـ Lock داخل الـ Transaction لضمان الـ Rollback لو حدث خطأ
 
-  // 🚀 [الضربة الذرية - Atomic Lock] نغير الحالة لـ PROCESSING لمنع الـ Double Click
-  const shift = await Shift.findOneAndUpdate(
-    { _id: id, branch_id: branchId, status: 'OPEN' },
-    { $set: { status: 'PROCESSING' } },
-    { new: true } // يرجع الوردية بعد التحديث
-  ).populate('acknowledged_by');
-
-  if (!shift) {
-    return next(new AppError('الوردية غير موجودة، أو مغلقة مسبقاً، أو قيد الإغلاق الآن!', 400));
-  }
-
-  const expensesAgg = await CashFlow.aggregate([
-    { $match: { shift_id: shift._id, type: { $in: ['EXPENSE', 'VENDOR_PAYMENT'] } } },
-    { $group: { _id: null, total: { $sum: '$amount' } } },
-  ]);
-  const totalExpenses = expensesAgg.length > 0 ? expensesAgg[0].total : 0;
-  const netShiftYield = numEnding + totalExpenses - shift.starting_cash;
-
-  shift.end_time = new Date();
-  shift.ending_cash_actual = numEnding;
-  shift.total_expenses = totalExpenses;
-  shift.net_shift_profit = netShiftYield;
-  shift.status = 'CLOSED';
-  if (machines_balances && Array.isArray(machines_balances)) shift.machines_balances = machines_balances;
-
-  const nextSequence = shift.shift_sequence + 1;
-
-  // 🛡️ بدء المعاملة الموحدة لحماية الدرج
+  // 🛡️ بدء المعاملة الموحدة لحماية الدرج أولاً
   const session = await mongoose.startSession();
   session.startTransaction();
 
+  let netShiftYield = 0;
+  let shift; // تعريف المتغير في النطاق الخارجي لاستخدامه لاحقاً في الإشعار
+
   try {
+    // 🛡️ SECURITY FIX: Find and lock inside the transaction
+    shift = await Shift.findOne({ _id: id, branch_id: branchId, status: 'OPEN' }).session(session).populate('acknowledged_by');
+    
+    if (!shift) {
+      throw new Error('SHIFT_NOT_FOUND_OR_CLOSED');
+    }
+
+    const expensesAgg = await CashFlow.aggregate([
+      { $match: { shift_id: shift._id, type: { $in: ['EXPENSE', 'VENDOR_PAYMENT'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    const totalExpenses = expensesAgg.length > 0 ? expensesAgg[0].total : 0;
+    netShiftYield = numEnding + totalExpenses - shift.starting_cash;
+
+    // تحديث بيانات الوردية القديمة
+    shift.end_time = new Date();
+    shift.ending_cash_actual = numEnding;
+    shift.total_expenses = totalExpenses;
+    shift.net_shift_profit = netShiftYield;
+    shift.status = 'CLOSED'; // 🛡️ التحديث يتم مباشرة للحالة النهائية هنا
+    if (machines_balances && Array.isArray(machines_balances)) shift.machines_balances = machines_balances;
+
+    const nextSequence = shift.shift_sequence + 1;
+
+    // حفظ الوردية القديمة
     await shift.save({ session });
 
+    // إنشاء وردية جديدة معلقة
     await Shift.create([{
       branch_id: branchId,
       cashier_id: req.user._id,
@@ -166,9 +170,12 @@ const closeShift = asyncHandler(async (req, res, next) => {
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
+    if (error.message === 'SHIFT_NOT_FOUND_OR_CLOSED') {
+        return next(new AppError('الوردية غير موجودة، أو مغلقة مسبقاً، أو قيد الإغلاق الآن!', 400));
+    }
     return next(new AppError('خطأ أثناء الإغلاق وتجهيز الدرج الجديد، تم التراجع لحفظ البيانات', 500));
   }
-
+  
   // 🚀 إرسال الإشعار بعد نجاح العملية (خارج الـ Transaction)
   try {
     const owner = await User.findOne({ organization_id: orgId, role: 'OWNER' }).select('notifications').lean();

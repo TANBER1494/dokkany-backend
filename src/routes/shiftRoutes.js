@@ -14,6 +14,7 @@ const {
 const { protect } = require('../middlewares/authMiddleware');
 const { authorize } = require('../middlewares/roleMiddleware');
 const { checkSubscription } = require('../middlewares/subscriptionMiddleware');
+const rateLimit = require('express-rate-limit');
 
 // ==========================================
 // 🛡️ الجدار الناري العام
@@ -28,14 +29,28 @@ router.use(protect);
 router.post('/', authorize('OWNER', 'CASHIER'), checkSubscription, openShift);
 router.get('/', authorize('OWNER', 'CASHIER'), getShiftsHistory);
 
+// ==========================================
 // 2. مسارات الحالة الثابتة (Active & Last-Closed)
+// ==========================================
+
+// 🛡️ SECURITY FIX: حماية مسار الـ PIN من التخمين العشوائي (Brute Force)
+const pinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 دقيقة
+  max: 5, // 5 محاولات فقط!
+  message: 'محاولات إدخال PIN كثيرة جداً، يرجى المحاولة لاحقاً.'
+});
+
 router.get('/active', authorize('OWNER', 'CASHIER'), getActiveShift);
+
+// 🛡️ تم حقن pinLimiter هنا لحماية هذا المسار تحديداً
 router.put(
   '/active/acknowledge',
   authorize('OWNER', 'CASHIER'),
   checkSubscription,
+  pinLimiter, // 👈 نقطة الحماية (Checkpoint)
   acknowledgeShift
 );
+
 router.get('/last-closed', authorize('OWNER', 'CASHIER'), getLastClosedShift);
 
 // ==========================================

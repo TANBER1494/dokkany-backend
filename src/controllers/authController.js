@@ -81,11 +81,12 @@ const registerOwner = asyncHandler(async (req, res, next) => {
       status: 'ACTIVE',
     }], { session });
 
-    // 5. الآن نولد التوكنز باستخدام الـ ID الحقيقي للمستخدم
+   // 5. الآن نولد التوكنز باستخدام الـ ID الحقيقي للمستخدم
     const { accessToken, refreshToken } = generateTokens(user._id, sessionId);
     
-    // حفظ توكن التجديد
-    user.refresh_token = refreshToken;
+    // 🛡️ SECURITY FIX: تشفير توكن التجديد قبل حفظه في قاعدة البيانات
+    const refreshSalt = await bcrypt.genSalt(10);
+    user.refresh_token = await bcrypt.hash(refreshToken, refreshSalt);
     await user.save({ session });
 
     // 6. اعتماد العملية
@@ -169,18 +170,27 @@ const refreshToken = asyncHandler(async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(refresh_token, process.env.JWT_REFRESH_SECRET);
+   const decoded = jwt.verify(refresh_token, process.env.JWT_REFRESH_SECRET);
 
-    const user = await User.findOne({ _id: decoded.id, refresh_token: refresh_token });
+    // 🛡️ SECURITY FIX: جلب المستخدم مع التوكن المشفر
+    const user = await User.findById(decoded.id).select('+refresh_token');
 
-    if (!user) {
-      return next(new AppError('توكن التجديد غير صالح أو تم تسجيل الدخول من جهاز آخر', 403));
+    if (!user || !user.refresh_token) {
+      return next(new AppError('غير مصرح', 403));
+    }
+
+    // 🛡️ SECURITY FIX: مقارنة التوكن المرسل بالتوكن المشفر في قاعدة البيانات
+    const isValidToken = await bcrypt.compare(refresh_token, user.refresh_token);
+    if (!isValidToken) {
+       return next(new AppError('توكن التجديد غير صالح أو تم تسجيل الدخول من جهاز آخر', 403));
     }
 
     const currentSessionId = user.current_session_id || crypto.randomBytes(16).toString('hex');
     const { accessToken, refreshToken: newRefreshToken } = generateTokens(user._id, currentSessionId);
 
-    user.refresh_token = newRefreshToken;
+    // 🛡️ SECURITY FIX: تشفير التوكن الجديد قبل حفظه
+    const refreshSalt = await bcrypt.genSalt(10);
+    user.refresh_token = await bcrypt.hash(newRefreshToken, refreshSalt);
     await user.save();
 
     res.status(200).json({

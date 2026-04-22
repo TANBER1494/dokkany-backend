@@ -170,35 +170,43 @@ const refreshToken = asyncHandler(async (req, res, next) => {
   }
 
   try {
-   const decoded = jwt.verify(refresh_token, process.env.JWT_REFRESH_SECRET);
+    const decoded = jwt.verify(refresh_token, process.env.JWT_REFRESH_SECRET);
 
-    // 🛡️ SECURITY FIX: جلب المستخدم مع التوكن المشفر
+    // 1. جلب المستخدم مع التوكن المشفر
     const user = await User.findById(decoded.id).select('+refresh_token');
 
     if (!user || !user.refresh_token) {
       return next(new AppError('غير مصرح', 403));
     }
 
-    // 🛡️ SECURITY FIX: مقارنة التوكن المرسل بالتوكن المشفر في قاعدة البيانات
+    // 2. مقارنة التوكن المرسل بالتوكن المشفر في قاعدة البيانات
     const isValidToken = await bcrypt.compare(refresh_token, user.refresh_token);
     if (!isValidToken) {
        return next(new AppError('توكن التجديد غير صالح أو تم تسجيل الدخول من جهاز آخر', 403));
     }
 
+    // ==========================================
+    // 🚀 SECURITY & UX FIX: إيقاف الـ Rotation لمنع خروج المستخدم على الموبايل
+    // ==========================================
+    // نكتفي بتوليد Access Token جديد فقط (مدته 15 دقيقة)
     const currentSessionId = user.current_session_id || crypto.randomBytes(16).toString('hex');
-    const { accessToken, refreshToken: newRefreshToken } = generateTokens(user._id, currentSessionId);
+    
+    const newAccessToken = jwt.sign(
+      { id: user._id, session_id: currentSessionId },
+      process.env.JWT_SECRET,
+      { expiresIn: '15m' }
+    );
 
-    // 🛡️ SECURITY FIX: تشفير التوكن الجديد قبل حفظه
-    const refreshSalt = await bcrypt.genSalt(10);
-    user.refresh_token = await bcrypt.hash(newRefreshToken, refreshSalt);
-    await user.save();
+    // 🛡️ لا نقوم بتوليد Refresh Token جديد ولا نقوم بالكتابة على الداتابيز
+    // هذا يمنع الـ (Desync) لو انقطع الإنترنت أثناء التجديد، ويجعل الجلسة مستقرة 100%
 
     res.status(200).json({
-      token: accessToken,
-      refresh_token: newRefreshToken,
+      token: newAccessToken,
+      refresh_token: refresh_token, // 👈 نعيد نفس توكن التجديد القديم كما هو للمتصفح
     });
+
   } catch (error) {
-    return next(new AppError('انتهت صلاحية الجلسة بالكامل، يرجى تسجيل الدخول من جديد', 403));
+    return next(new AppError('انتهت صلاحية الجلسة بالكامل (30 يوم)، يرجى تسجيل الدخول من جديد', 403));
   }
 });
 

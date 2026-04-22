@@ -1,5 +1,5 @@
 const User = require('../models/User');
-const Branch = require('../models/Branch'); // 👈 [جديد] للتحقق من الفرع
+const Branch = require('../models/Branch'); 
 const bcrypt = require('bcryptjs');
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -12,7 +12,6 @@ const getPosAccount = asyncHandler(async (req, res, next) => {
   const { branchId } = req.params;
   const orgId = req.user.organization_id;
 
-  // 🚀 استخدام .lean() واستبعاد الباسورد
   const posAccount = await User.findOne({ 
     branch_id: branchId, organization_id: orgId, role: 'CASHIER', deleted_at: null
   }).select('phone name').lean();
@@ -35,11 +34,9 @@ const upsertPosAccount = asyncHandler(async (req, res, next) => {
 
   if (!phone) return next(new AppError('رقم الهاتف مطلوب لحساب الكاشير', 400));
 
-  // 🛡️ [حماية جراحية] التأكد أن الفرع موجود ويتبع للمالك، لمنع ثغرة الـ Branch Spoofing
   const branchExists = await Branch.exists({ _id: branchId, organization_id: orgId });
   if (!branchExists) return next(new AppError('الفرع المحدد غير موجود أو لا تتبع له', 403));
 
-  // جلب الحساب الحالي لهذا الفرع (إن وجد)، وجلب المستخدم صاحب هذا الرقم (إن وجد)
   const [existingPhoneUser, currentPosAccount] = await Promise.all([
     User.findOne({ phone, deleted_at: null }).lean(),
     User.findOne({ branch_id: branchId, organization_id: orgId, role: 'CASHIER', deleted_at: null })
@@ -53,6 +50,9 @@ const upsertPosAccount = asyncHandler(async (req, res, next) => {
       return next(new AppError('رقم الهاتف مستخدم لحساب آخر في النظام', 400));
     }
     
+    // 🛡️ SECURITY FIX: نتحقق مما إذا كان المالك قد غيّر رقم الهاتف الفعلي
+    const isPhoneChanged = currentPosAccount.phone !== phone.trim();
+
     currentPosAccount.phone = phone.trim();
     if (name) currentPosAccount.name = name.trim();
     
@@ -62,8 +62,15 @@ const upsertPosAccount = asyncHandler(async (req, res, next) => {
       currentPosAccount.password_hash = await bcrypt.hash(password, salt);
     }
     
+    // 🛡️ SECURITY FIX (Session Revocation): الضربة القاضية للجلسات القديمة
+    // إذا قام المالك بتغيير الباسورد أو تغيير رقم الهاتف، نقوم بمسح التوكنات القديمة لطرد الأجهزة المخترقة أو القديمة فوراً
+    if (password || isPhoneChanged) {
+      currentPosAccount.refresh_token = null;
+      currentPosAccount.current_session_id = null;
+    }
+    
     await currentPosAccount.save();
-    return res.status(200).json({ message: 'تم تحديث بيانات حساب نقطة البيع بنجاح' });
+    return res.status(200).json({ message: 'تم تحديث بيانات حساب نقطة البيع بنجاح (وتم إغلاق الجلسات القديمة)' });
   } 
   
   // ==========================

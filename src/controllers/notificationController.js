@@ -9,14 +9,27 @@ const AppError = require('../utils/AppError');
 // 🚀 1. تهيئة الفايربيز (Firebase Admin Initialization)
 // ==========================================
 try {
-  // نقوم باستدعاء المفتاح السري الذي حملته
-  const serviceAccount = require('../config/firebase-key.json');
+  let serviceAccount;
+
+  // فحص ما إذا كنا في السيرفر الحقيقي ونمتلك المتغيرات البيئية
+  if (process.env.FIREBASE_PRIVATE_KEY) {
+    serviceAccount = {
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      // استبدال علامات الهروب لكي يُقرأ المفتاح بشكل صحيح من الـ .env
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    };
+  } else {
+    // إذا لم نكن في السيرفر الحقيقي، اقرأ من الملف المحلي
+    serviceAccount = require('../config/firebase-key.json');
+  }
+
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
   console.log('🔥 Firebase Admin Initialized Successfully');
 } catch (error) {
-  console.error('❌ فشل تهيئة Firebase Admin (تأكد من وجود ملف firebase-key.json في مجلد config):', error.message);
+  console.error('❌ فشل تهيئة Firebase Admin:', error.message);
 }
 
 // ==========================================
